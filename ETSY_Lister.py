@@ -2,7 +2,9 @@ from etsy2 import Etsy
 from etsy2.oauth import EtsyOAuthClient, EtsyOAuthHelper
 
 import logging
+import os
 import webbrowser
+import json
 import urllib.parse as urlparse
 from urllib.parse import parse_qs
 
@@ -11,20 +13,28 @@ import PySimpleGUI as sg
 
 class EtsyHelper():
     def __init__(self):
-        self.etsy = self.init_etsy()
         sg.theme('dark grey 9')
 
-        self.shipping_templates = self.read_shipping_templates()
-        self.listing_templates = self.read_listing_templates()
-        layout = self.generate_layout(
-            list(self.shipping_templates.keys()),
-            list(self.listing_templates.keys()))
+        self.data = r'data'
+        create_dir(self.data)
+        self.templates = os.path.join(self.data, 'templates')
+        create_dir(self.templates)
+
+        # self.etsy = self.init_etsy()
+
+        # self.shipping_templates = self.read_shipping_templates()
+        # self.listing_templates = self.read_listing_templates()
+        # layout = self.generate_layout(
+        #     list(self.shipping_templates.keys()),
+        #     list(self.listing_templates.keys()))
+        layout = self.generate_layout([], [])
 
         self.window = sg.Window(self.__class__.__name__, layout)
 
     def init_etsy(self):
         logging.info('Getting keys...')
-        keys = self.get_api_key('key.txt')
+        key_file = os.path.join(self.data, 'keys.txt')
+        keys = self.get_api_key(key_file)
         more_keys = self.oAuthHelper(keys['key'], keys['shared_secret'])
         keys.update(more_keys)
 
@@ -39,13 +49,42 @@ class EtsyHelper():
         return etsy
 
     def get_api_key(self, f_name):
-        with open(f_name) as f:
-            key = f.readline()[:-1]  # Trim newline
-            shared_secret = f.readline()[:-1]
-            return {
-                'key': key,
-                'shared_secret': shared_secret,
-            }
+        try:
+            with open(f_name, 'r') as f:
+                keys = json.load(f)
+                logging.info('read {} from {}'.format(keys, f_name))
+        except (FileNotFoundError, json.decoder.JSONDecodeError):
+            keys = {}
+            msg = 'Enter your api key: '
+            keys['key'] = sg.popup_get_text(msg)
+            if not keys['key']:
+                raise ValueError('Need api key: https://www.etsy.com/developers/your-apps')
+
+            msg = 'Enter your shared secret: '
+            keys['shared_secret'] = sg.popup_get_text(msg)
+            if not keys['shared_secret']:
+                raise ValueError('Need api key: https://www.etsy.com/developers/your-apps')
+
+            with open(f_name, 'w') as f:
+                json.dump(keys, f)
+
+        return keys
+
+    def get_uid(self, f_name):
+        try:
+            with open(f_name) as f:
+                user_id = json.load(f)
+                logging.info('read {} from {}'.format(user_id, f_name))
+        except (FileNotFoundError, json.decoder.JSONDecodeError):
+            msg = 'enter your user id: '
+            user_id = sg.popup_get_text(msg)
+            if not user_id:
+                raise ValueError('Need user id')
+
+            with open(f_name, 'w') as f:
+                json.dump(user_id, f)
+
+        return user_id
 
     def oAuthHelper(self, api_key, shared_secret):
         # define permissions scopes as defined in the 'OAuth Authentication'
@@ -85,7 +124,8 @@ class EtsyHelper():
                            key='--ShippingTemplate--')],
             [sg.Text('Choose a listing template')],
             [sg.InputCombo(values=listing_templates,
-                           key='--ListingTemplate--')],
+                           key='--ListingTemplate--'),
+             sg.Button('New Template')],
             [sg.Text('Choose a number of coppies: '),
              sg.Spin([i for i in range(10)],
                      key='--NumListings--')],
@@ -95,7 +135,8 @@ class EtsyHelper():
         return layout
 
     def read_shipping_templates(self):
-        uid = get_uid()
+        uid_file = os.path.join(self.data, 'uid.txt')
+        uid = self.get_uid(uid_file)
         res = self.etsy.findAllUserShippingProfiles(user_id=uid)
         shipping_templates = {}
         for template in res:
@@ -105,6 +146,46 @@ class EtsyHelper():
 
     def read_listing_templates(self):
         return {}
+
+    def create_listing_template(self):
+        params = {
+            'title': 'str',
+            'description': 'str',
+            'quantity': 'int',
+            'price': 'float',
+            'taxonomy_id': 'int',
+            'who_made': ['i_did', 'collective', 'someone_else'],
+            'is_supply': 'bool',
+            'when_made': ['made_to_order']}
+        layout = []
+        for param, type_str in params.items():
+            label = sg.Text('{}: '.format(param))
+            if type_str in ['str', 'int', 'float']:
+                block = sg.InputText(key='{}'.format(param))
+            elif type_str == 'bool':
+                block = sg.Checkbox('', key='{}'.format(param))
+            elif isinstance(type_str, list):
+                block = sg.Combo(type_str)
+            else:
+                logging.error('{} not supported'.format(type_str))
+            layout.append([label, block])
+
+        layout.append(
+            [sg.Button('Save')]
+        )
+
+        window = sg.Window('New Template', layout)
+
+        while True:
+            event, values = window.read()
+            if event == sg.WINDOW_CLOSED or event == 'Quit':
+                break
+            elif event == 'Save':
+                self.save_listing_template(values)
+
+    def save_listing_template(self, values):
+        for param, value in values.items():
+            print('{}: {}'.format(value))
 
     def create_listings(self, values):
         template = values['--ShippingTemplate--']
@@ -116,7 +197,7 @@ class EtsyHelper():
         num_listings = values['--NumListings--']
         logging.error('Num listings not yet used')
 
-        print("Creating listing...")
+        logging.info("Creating listing...")
 
         result = self.etsy.createListing(
             state=config.state,
@@ -131,7 +212,8 @@ class EtsyHelper():
             shipping_template_id=ship_id,
         )
         listing_id = result[0]['listing_id']
-        print("Created listing with listing id %d" % listing_id)
+        logging.info("Created listing with listing id %d" % listing_id)
+        return listing_id
 
     def run(self):
         while True:
@@ -139,43 +221,33 @@ class EtsyHelper():
             if event == sg.WINDOW_CLOSED or event == 'Quit':
                 break
 
-            if event == 'Create':
-                self.create_listings(values)
-                out = 'UNF - will create listing here'
-                self.window['--OUTPUT--'].update(out)
+            elif event == 'Create':
+                try:
+                    list_id = self.create_listings(values)
+                    logging.info('created listing {} from {}'.format(
+                        list_id, values))
+                except Exception as e:
+                    logging.error(e)
+
+            elif event == 'New Template':
+                self.create_listing_template()
+
+                logging.info('Regenerating window with new template')
+                self.listing_templates = self.read_listing_templates()
+                layout = self.generate_layout(
+                    list(self.shipping_templates.keys()),
+                    list(self.listing_templates.keys()))
+
+                self.window = sg.Window(self.__class__.__name__, layout)
 
         self.window.close()
 
 
-def get_uid():
-    with open('uid.txt') as f:
-        user_id = f.readline()[:-1]
-    return user_id
-
-
-def test():
-    logging.info('Getting keys...')
-    keys = get_api_key('key.txt')
-    more_keys = oAuthHelper(keys['key'], keys['shared_secret'])
-    keys.update(more_keys)
-
-    logging.info('Creating API object...')
-    etsy_oauth = EtsyOAuthClient(
-        client_key=keys['key'],
-        client_secret=keys['shared_secret'],
-        resource_owner_key=keys['oauth_token'],
-        resource_owner_secret=keys['oauth_secret']
-    )
-    etsy = Etsy(etsy_oauth_client=etsy_oauth)
-
-    # TODO
-    shipping_template_id = create_shipping_template(etsy)
-    # result = etsy.getShippingTemplate(
-    #     shipping_template_id=shipping_template_id)
-    # print(result)
-
-    config = Config()
-    create_listing(etsy, config, shipping_template_id)
+def create_dir(path):
+    try:
+        os.mkdir(path)
+    except OSError:
+        pass
 
 
 def create_shipping_template(etsy):
@@ -197,7 +269,7 @@ def create_shipping_template(etsy):
     return shipping_template_id
 
 
-class Config():
+class ListingTemplate():
     def __init__(self):
         self.state = 'inactive'
         self.description = 'Test listing description'
@@ -210,27 +282,7 @@ class Config():
         self.when_made = 'made_to_order'
 
 
-def create_listing(etsy, config, shipping_template_id):
-    print("Creating listing...")
-
-    result = etsy.createListing(
-        state=config.state,
-        description=config.description,
-        title=config.title,
-        price=config.price,
-        taxonomy_id=config.taxonomy_id,
-        quantity=config.quantity,
-        who_made=config.who_made,
-        is_supply=config.is_supply,
-        when_made=config.when_made,
-        shipping_template_id=shipping_template_id,
-    )
-    listing_id = result[0]['listing_id']
-    print("Created listing with listing id %d" % listing_id)
-    # result = etsy.uploadListingImage(listing_id=listing_id, image=config.image_file)
-    # print("Result of uploading image: %r" % result)
-
-
 if __name__ == '__main__':
+    logging.basicConfig(level=logging.INFO)
     app = EtsyHelper()
     app.run()
