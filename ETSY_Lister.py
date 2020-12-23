@@ -20,14 +20,15 @@ class EtsyHelper():
         self.templates = os.path.join(self.data, 'templates')
         create_dir(self.templates)
 
-        # self.etsy = self.init_etsy()
+        self.etsy = self.init_etsy()
 
-        # self.shipping_templates = self.read_shipping_templates()
-        # self.listing_templates = self.read_listing_templates()
-        # layout = self.generate_layout(
-        #     list(self.shipping_templates.keys()),
-        #     list(self.listing_templates.keys()))
-        layout = self.generate_layout([], [])
+        self.shipping_templates = self.read_shipping_templates()
+        self.listing_templates = self.read_listing_templates()
+        # self.shipping_templates = {}
+        # self.listing_templates = {}
+        layout = self.generate_layout(
+            list(self.shipping_templates.keys()),
+            list(self.listing_templates.keys()))
 
         self.window = sg.Window(self.__class__.__name__, layout)
 
@@ -145,27 +146,36 @@ class EtsyHelper():
         return shipping_templates
 
     def read_listing_templates(self):
-        return {}
+        listing_templates = {}
+        logging.info('Reading templates from {}'.format(self.templates))
+        for file in os.listdir(self.templates):
+            f_name = os.path.join(self.templates, file)
+            with open(f_name, 'r') as f:
+                template = json.load(f)
+                title = template['title']
+                listing_templates[title] = template
+        return listing_templates
 
     def create_listing_template(self):
-        params = {
-            'title': 'str',
-            'description': 'str',
-            'quantity': 'int',
-            'price': 'float',
-            'taxonomy_id': 'int',
-            'who_made': ['i_did', 'collective', 'someone_else'],
-            'is_supply': 'bool',
-            'when_made': ['made_to_order']}
+        params = [
+            ('title', 'str', True),
+            ('description', 'str', True),
+            ('quantity', 'int', True),
+            ('price', 'float', True),
+            ('taxonomy_id', 'int', True),
+            ('who_made', ['i_did', 'collective', 'someone_else'], True),
+            ('is_supply', 'bool', True),
+            ('when_made', ['made_to_order'], True),
+        ]
         layout = []
-        for param, type_str in params.items():
+        for param, type_str, required in params:
             label = sg.Text('{}: '.format(param))
             if type_str in ['str', 'int', 'float']:
-                block = sg.InputText(key='{}'.format(param))
+                block = sg.InputText(key=param)
             elif type_str == 'bool':
-                block = sg.Checkbox('', key='{}'.format(param))
+                block = sg.Checkbox('', key=param)
             elif isinstance(type_str, list):
-                block = sg.Combo(type_str)
+                block = sg.Combo(type_str, key=param)
             else:
                 logging.error('{} not supported'.format(type_str))
             layout.append([label, block])
@@ -181,38 +191,55 @@ class EtsyHelper():
             if event == sg.WINDOW_CLOSED or event == 'Quit':
                 break
             elif event == 'Save':
-                self.save_listing_template(values)
+                try:
+                    self.save_listing_template(params, values)
+                    break
+                except (KeyError, TypeError) as e:
+                    logging.error(e)
+                    sg.Popup(title='Error: {}'.format(e))
 
-    def save_listing_template(self, values):
-        for param, value in values.items():
-            print('{}: {}'.format(value))
+        window.close()
+
+    def save_listing_template(self, params, values):
+        template = {}
+        for param, type_str, required in params:
+            if required and not values[param]:
+                raise KeyError('{} not specified'.format(param))
+            elif param in values:
+                if type_str == 'int':
+                    template[param] = int(values[param])
+                elif type_str == 'float':
+                    template[param] = float(values[param])
+                else:
+                    template[param] = (values[param])
+
+        f_name = os.path.join(self.templates, values['title'])
+        with open(f_name, 'w') as f:
+            json.dump(template, f)
 
     def create_listings(self, values):
         template = values['--ShippingTemplate--']
-        ship_id = self.shipping_templates[template]
+        ship_id = self.shipping_templates[template]['shipping_template_id']
 
         template = values['--ListingTemplate--']
-        config = self.shipping_templates[template]
+        config = self.listing_templates[template]
 
         num_listings = values['--NumListings--']
-        logging.error('Num listings not yet used')
 
         logging.info("Creating listing...")
 
-        result = self.etsy.createListing(
-            state=config.state,
-            description=config.description,
-            title=config.title,
-            price=config.price,
-            taxonomy_id=config.taxonomy_id,
-            quantity=config.quantity,
-            who_made=config.who_made,
-            is_supply=config.is_supply,
-            when_made=config.when_made,
-            shipping_template_id=ship_id,
-        )
+        kwargs = config.copy()
+        kwargs.update({
+            'state': 'draft',
+            'shipping_template_id': ship_id
+        })
+
+        base_title = kwargs['title']
+        for i in range(num_listings):
+            kwargs['title'] = base_title + '_{}'.format(i)
+            result = self.etsy.createListing(**kwargs)
+
         listing_id = result[0]['listing_id']
-        logging.info("Created listing with listing id %d" % listing_id)
         return listing_id
 
     def run(self):
@@ -226,7 +253,7 @@ class EtsyHelper():
                     list_id = self.create_listings(values)
                     logging.info('created listing {} from {}'.format(
                         list_id, values))
-                except Exception as e:
+                except FileNotFoundError as e:
                     logging.error(e)
 
             elif event == 'New Template':
@@ -267,19 +294,6 @@ def create_shipping_template(etsy):
             # shipping_template_id = f.readline()[:-1]  # Entry id
 
     return shipping_template_id
-
-
-class ListingTemplate():
-    def __init__(self):
-        self.state = 'inactive'
-        self.description = 'Test listing description'
-        self.title = 'Test listing title'
-        self.quantity = 1
-        self.price = 0.20
-        self.taxonomy_id = 2350  # Dice tag maybe??
-        self.who_made = ['i_did', 'collective', 'someone_else'][0]
-        self.is_supply = True
-        self.when_made = 'made_to_order'
 
 
 if __name__ == '__main__':
