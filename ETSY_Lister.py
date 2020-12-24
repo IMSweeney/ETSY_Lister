@@ -169,7 +169,7 @@ class EtsyHelper():
         ]
         layout = []
         for param, type_str, required in params:
-            label = sg.Text('{}: '.format(param))
+            label = sg.Text('{}: '.format(param), size=(12, 1))
             if type_str in ['str', 'int', 'float']:
                 block = sg.InputText(key=param)
             elif type_str == 'bool':
@@ -265,6 +265,7 @@ class EtsyHelper():
                     list(self.shipping_templates.keys()),
                     list(self.listing_templates.keys()))
 
+                self.window.close()
                 self.window = sg.Window(self.__class__.__name__, layout)
 
         self.window.close()
@@ -297,6 +298,10 @@ def create_shipping_template(etsy):
 
 
 if __name__ == '__main__':
-    logging.basicConfig(level=logging.INFO)
+    create_dir('logs')
+    log_name = os.path.join('logs', 'etsy_lister.log')
+    logging.basicConfig(level=logging.INFO,
+                        handlers=[logging.FileHandler(log_name),
+                                  logging.StreamHandler()])
     app = EtsyHelper()
     app.run()
